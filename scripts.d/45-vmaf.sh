@@ -7,6 +7,15 @@ ffbuild_enabled() {
     return 0
 }
 
+ffbuild_depends() {
+    echo base
+    echo ffnvcodec
+}
+
+ffbuild_dockerstage() {
+    to_df "RUN --mount=src=${SELF},dst=/stage.sh --mount=src=${SELFCACHE},dst=/cache.tar.xz --mount=src=patches/nvcc,dst=/patches run_stage /stage.sh"
+}
+
 ffbuild_dockerbuild() {
     # Kill build of unused and broken tools
     echo > libvmaf/tools/meson.build
@@ -33,9 +42,10 @@ ffbuild_dockerbuild() {
         return -1
     fi
 
-    meson "${myconf[@]}" ../libvmaf || cat meson-logs/meson-log.txt
-    ninja -j"$(nproc)"
-    DESTDIR="$FFBUILD_DESTDIR" ninja install
+    source /patches/nvcc.sh
+    meson "${myconf[@]}" ../libvmaf ../libvmaf/build || cat meson-logs/meson-log.txt
+    ninja -j"$(nproc)" -C ../libvmaf/build
+    DESTDIR="$FFBUILD_DESTDIR" ninja install -C ../libvmaf/build
 
     sed -i 's/Libs.private:/Libs.private: -lstdc++/; t; $ a Libs.private: -lstdc++' "$FFBUILD_DESTPREFIX"/lib/pkgconfig/libvmaf.pc
 }
