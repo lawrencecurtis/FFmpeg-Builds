@@ -36,7 +36,7 @@ cat <<EOF >"$BUILD_SCRIPT"
     git clone --filter=blob:none --branch='$GIT_BRANCH' '$FFMPEG_REPO' ffmpeg
     cd ffmpeg
 
-    if [[ \$ADDINS_STR == *nvcc* ]]; then
+    if [[ \$VARIANT == *nvcc* ]]; then
 	patch -p0 < <(curl https://gist.githubusercontent.com/lawrencecurtis/c10aaa0ab26335af1be67cdb08593018/raw/93fca2cf8abbd7635a9f01ed629787cc260e10a2/configure_changes.diff)
         CUDA_PATH="/usr/local/cuda-${NV_VER}/linux-${NV_ARCH}"
         CUDA_HOME="/usr/local/cuda-${NV_VER}/linux-${NV_ARCH}"

@@ -49,7 +49,7 @@ ffbuild_dockerbuild() {
         NV_ARCH=$(uname -m | grep -q "x86" && echo "x86_64" || echo "aarch64")
 
         # ---- NVCC config ----
-        if [[ $ADDINS_STR == *nvcc* ]]; then
+        if [[ $VARIANT == *nvcc* ]]; then
             #echo "NO!!!!" && exit 1
             wget -q -O - https://github.com/AutoCRF/vmaf/pull/3.patch | git apply
 
