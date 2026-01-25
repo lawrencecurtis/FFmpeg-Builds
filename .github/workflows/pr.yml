@@ -23,9 +23,9 @@ jobs:
             gpl,
             gpl 8.0,
             gpl 7.1,
-            nonfree nvcc,
-            nonfree nvcc 8.0,
-            nonfree nvcc 7.1,
+            nvcc,
+            nvcc 8.0,
+            nvcc 7.1,
           ]
         quickbuild: [1]
     steps:
