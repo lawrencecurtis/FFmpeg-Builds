@@ -196,6 +196,7 @@ jobs:
             nvcc,
             nvcc 8.0,
             nvcc 7.1,
+            nvcc-shared 8.0
           ]
     steps:
       - name: Free Disk-Space
@@ -270,6 +271,7 @@ jobs:
             nvcc,
             nvcc 8.0,
             nvcc 7.1,
+            nvcc-shared 8.0
           ]
     steps:
       - name: Free Disk-Space
