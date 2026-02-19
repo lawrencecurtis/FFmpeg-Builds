@@ -21,7 +21,7 @@ ffbuild_dockerbuild() {
     # Kill build of unused and broken tools
     echo > libvmaf/tools/meson.build
 
-#   git apply /patches/0001-fix-install.patch
+   git apply /patches/0001-fix-install.patch
 
     mkdir build && cd build
 
