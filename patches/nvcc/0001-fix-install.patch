@@ -1,0 +1,68 @@
+From 0dd0e7b55df84705ad1bf4eb2b2354b07d7565dd Mon Sep 17 00:00:00 2001
+From: Lawrence Curtis <lawrencecurtis@yellowpad.co.uk>
+Date: Thu, 19 Feb 2026 14:18:22 +0000
+Subject: [PATCH] fix install
+
+---
+ Makefile                            | 7 ++++---
+ libvmaf/include/libvmaf/meson.build | 5 +++++
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index a83910b5..37086a45 100644
+--- a/Makefile
++++ b/Makefile
+@@ -19,6 +19,7 @@ BUILDTYPE_DEBUG := --buildtype debug
+ ENABLE_FLOAT := -Denable_float=true
+ ENABLE_NVCC :=	true
+ ENABLE_CUDA := -Denable_cuda=true -Denable_nvcc=$(ENABLE_NVCC)
++ENABLE_VULKAN := -Denable_vulkan=true
+ 
+ # Directories
+ LIBVMAF_DIR := libvmaf
+@@ -32,10 +33,10 @@ default: build
+ all: build debug install test cythonize
+ 
+ $(BUILD_DIR): $(MESON) $(NINJA)
+-	PATH="$(VENV)/bin:$$PATH" $(MESON_SETUP) $(BUILD_DIR) $(LIBVMAF_DIR) $(BUILDTYPE_RELEASE) $(ENABLE_FLOAT) $(ENABLE_CUDA)
++	PATH="$(VENV)/bin:$$PATH" $(MESON_SETUP) $(BUILD_DIR) $(LIBVMAF_DIR) $(BUILDTYPE_RELEASE) $(ENABLE_FLOAT) $(ENABLE_CUDA) $(ENABLE_VULKAN)
+ 
+ $(DEBUG_DIR): $(MESON) $(NINJA)
+-	PATH="$(VENV)/bin:$$PATH" $(MESON_SETUP) $(DEBUG_DIR) $(LIBVMAF_DIR) $(BUILDTYPE_DEBUG) $(ENABLE_FLOAT) $(ENABLE_CUDA)
++	PATH="$(VENV)/bin:$$PATH" $(MESON_SETUP) $(DEBUG_DIR) $(LIBVMAF_DIR) $(BUILDTYPE_DEBUG) $(ENABLE_FLOAT) $(ENABLE_CUDA) $(ENABLE_VULKAN)
+ 
+ cythonize: cythonize-deps
+ 	pushd python && ../$(VENV_PYTHON) setup.py build_ext --build-lib . && popd || exit 1
+@@ -73,4 +74,4 @@ $(NINJA): $(VENV_PIP)
+ 	$(VENV_PIP) install ninja || { echo "Failed to install ninja"; exit 1; }
+ 
+ cythonize-deps: $(VENV_PIP)
+-	$(VENV_PIP) install setuptools cython numpy || { echo "Failed to install dependencies"; exit 1; }
+\ No newline at end of file
++	$(VENV_PIP) install setuptools cython numpy || { echo "Failed to install dependencies"; exit 1; }
+diff --git a/libvmaf/include/libvmaf/meson.build b/libvmaf/include/libvmaf/meson.build
+index c8927a70..bbbb09ec 100644
+--- a/libvmaf/include/libvmaf/meson.build
++++ b/libvmaf/include/libvmaf/meson.build
+@@ -8,6 +8,7 @@ version_h_target = configure_file(input: 'version.h.in',
+                                   configuration: version_h_data)
+ 
+ is_cuda_enabled = get_option('enable_cuda') == true
++is_vulkan_enabled = get_option('enable_vulkan') == true
+ 
+ platform_specific_headers = []
+ 
+@@ -15,6 +16,10 @@ if is_cuda_enabled
+   platform_specific_headers += 'libvmaf_cuda.h'
+ endif
+ 
++if is_vulkan_enabled
++  platform_specific_headers += 'libvmaf_vulkan.h'
++endif
++
+ # install headers
+ install_headers(['libvmaf.h',
+                 'feature.h',
+-- 
+2.50.1 (Apple Git-155)
+

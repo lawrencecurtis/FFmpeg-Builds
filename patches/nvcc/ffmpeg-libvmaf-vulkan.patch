@@ -1,0 +1,150 @@
+diff --git a/configure b/configure
+index da93aaf..fdc2105 100755
+--- a/configure
++++ b/configure
+@@ -295,6 +295,7 @@ External library support:
+   --enable-libv4l2         enable libv4l2/v4l-utils [no]
+   --enable-libvidstab      enable video stabilization using vid.stab [no]
+   --enable-libvmaf         enable vmaf filter via libvmaf [no]
++  --enable-libvmaf-vulkan  enable Vulkan-accelerated vmaf filter via libvmaf [no]
+   --enable-libvo-amrwbenc  enable AMR-WB encoding via libvo-amrwbenc [no]
+   --enable-libvorbis       enable Vorbis en/decoding via libvorbis,
+                            native implementation exists [no]
+@@ -2096,6 +2097,7 @@ EXTERNAL_LIBRARY_LIST="
+     libuavs3d
+     libv4l2
+     libvmaf
++    libvmaf_vulkan
+     libvorbis
+     libvpx
+     libvvenc
+@@ -4219,6 +4221,7 @@ vidstabdetect_filter_deps="libvidstab"
+ vidstabtransform_filter_deps="libvidstab"
+ libvmaf_filter_deps="libvmaf"
+ libvmaf_cuda_filter_deps="libvmaf libvmaf_cuda ffnvcodec"
++libvmaf_vulkan_filter_deps="libvmaf libvmaf_vulkan"
+ zmq_filter_deps="libzmq"
+ zoompan_filter_deps="swscale"
+ zscale_filter_deps="libzimg const_nan"
+@@ -7369,6 +7372,8 @@ enabled libv4l2           && require_pkg_config libv4l2 libv4l2 libv4l2.h v4l2_i
+ enabled libvidstab        && require_pkg_config libvidstab "vidstab >= 0.98" vid.stab/libvidstab.h vsMotionDetectInit
+ enabled libvmaf           && require_pkg_config libvmaf "libvmaf >= 2.0.0" libvmaf.h vmaf_init
+ enabled libvmaf           && check_pkg_config libvmaf_cuda "libvmaf >= 2.0.0" libvmaf_cuda.h vmaf_cuda_state_init
++enabled libvmaf_vulkan    && require_pkg_config libvmaf "libvmaf >= 2.0.0" libvmaf.h vmaf_init &&
++                             check_pkg_config libvmaf_vulkan "libvmaf >= 2.0.0" libvmaf_vulkan.h vmaf_vulkan_state_init
+ enabled libvo_amrwbenc    && require libvo_amrwbenc vo-amrwbenc/enc_if.h E_IF_init -lvo-amrwbenc
+ enabled libvorbis         && require_pkg_config libvorbis vorbis vorbis/codec.h vorbis_info_init &&
+                              require_pkg_config libvorbisenc vorbisenc vorbis/vorbisenc.h vorbis_encode_init
+diff --git a/libavfilter/Makefile b/libavfilter/Makefile
+index 6ecacc3..752c558 100644
+--- a/libavfilter/Makefile
++++ b/libavfilter/Makefile
+@@ -375,6 +375,7 @@ OBJS-$(CONFIG_LENSFUN_FILTER)                += vf_lensfun.o
+ OBJS-$(CONFIG_LIBPLACEBO_FILTER)             += vf_libplacebo.o vulkan.o vulkan_filter.o
+ OBJS-$(CONFIG_LIBVMAF_FILTER)                += vf_libvmaf.o framesync.o
+ OBJS-$(CONFIG_LIBVMAF_CUDA_FILTER)           += vf_libvmaf.o framesync.o
++OBJS-$(CONFIG_LIBVMAF_VULKAN_FILTER)        += vf_libvmaf.o framesync.o
+ OBJS-$(CONFIG_LIMITDIFF_FILTER)              += vf_limitdiff.o framesync.o
+ OBJS-$(CONFIG_LIMITER_FILTER)                += vf_limiter.o
+ OBJS-$(CONFIG_LOOP_FILTER)                   += f_loop.o
+diff --git a/libavfilter/allfilters.c b/libavfilter/allfilters.c
+index 458f8c5..d2a694d 100644
+--- a/libavfilter/allfilters.c
++++ b/libavfilter/allfilters.c
+@@ -349,6 +349,7 @@ extern const FFFilter ff_vf_lensfun;
+ extern const FFFilter ff_vf_libplacebo;
+ extern const FFFilter ff_vf_libvmaf;
+ extern const FFFilter ff_vf_libvmaf_cuda;
++extern const FFFilter ff_vf_libvmaf_vulkan;
+ extern const FFFilter ff_vf_limitdiff;
+ extern const FFFilter ff_vf_limiter;
+ extern const FFFilter ff_vf_loop;
+diff --git a/libavfilter/vf_libvmaf.c b/libavfilter/vf_libvmaf.c
+index 3ab67d3..7b67cc0 100644
+--- a/libavfilter/vf_libvmaf.c
++++ b/libavfilter/vf_libvmaf.c
+@@ -46,6 +46,10 @@
+ #include "libavutil/hwcontext_cuda_internal.h"
+ #endif
+ 
++#if CONFIG_LIBVMAF_VULKAN_FILTER
++#include <libvmaf/libvmaf_vulkan.h>
++#endif
++
+ typedef struct LIBVMAFContext {
+     const AVClass *class;
+     FFFrameSync fs;
+@@ -64,6 +68,9 @@ typedef struct LIBVMAFContext {
+ #if CONFIG_LIBVMAF_CUDA_FILTER
+     VmafCudaState *cu_state;
+ #endif
++#if CONFIG_LIBVMAF_VULKAN_FILTER
++    VmafVulkanState *vk_state;
++#endif
+ } LIBVMAFContext;
+ 
+ #define OFFSET(x) offsetof(LIBVMAFContext, x)
+@@ -826,3 +833,63 @@ const FFFilter ff_vf_libvmaf_cuda = {
+     .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
+ };
+ #endif
++
++#if CONFIG_LIBVMAF_VULKAN_FILTER
++static av_cold int init_vulkan(AVFilterContext *ctx)
++{
++    LIBVMAFContext *s = ctx->priv;
++    int err;
++
++    VmafVulkanConfiguration vk_cfg = { 0 };
++
++    err = vmaf_vulkan_state_init(&s->vk_state, vk_cfg);
++    if (err) {
++        av_log(ctx, AV_LOG_ERROR,
++               "problem during vmaf_vulkan_state_init: %d\n", err);
++        return AVERROR_EXTERNAL;
++    }
++
++    VmafConfiguration cfg = {
++        .log_level = log_level_map(av_log_get_level()),
++        .n_subsample = s->n_subsample,
++        .n_threads = s->n_threads,
++    };
++
++    err = vmaf_init(&s->vmaf, cfg);
++    if (err)
++        return AVERROR(EINVAL);
++
++    err = vmaf_vulkan_import_state(s->vmaf, s->vk_state);
++    if (err) {
++        av_log(ctx, AV_LOG_ERROR,
++               "problem during vmaf_vulkan_import_state: %d\n", err);
++        return AVERROR_EXTERNAL;
++    }
++
++    err = parse_models(ctx);
++    if (err)
++        return err;
++
++    err = parse_features(ctx);
++    if (err)
++        return err;
++
++    s->fs.on_event = do_vmaf;
++    return 0;
++}
++
++const FFFilter ff_vf_libvmaf_vulkan = {
++    .p.name        = "libvmaf_vulkan",
++    .p.description = NULL_IF_CONFIG_SMALL("Calculate the VMAF between two video "
++                                          "streams using Vulkan GPU acceleration."),
++    .p.priv_class  = &libvmaf_class,
++    .preinit       = libvmaf_framesync_preinit,
++    .init          = init_vulkan,
++    .uninit        = uninit,
++    .activate      = activate,
++    .priv_size     = sizeof(LIBVMAFContext),
++    FILTER_INPUTS(libvmaf_inputs),
++    FILTER_OUTPUTS(libvmaf_outputs),
++    FILTER_PIXFMTS_ARRAY(pix_fmts),
++};
++#endif

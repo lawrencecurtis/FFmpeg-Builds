@@ -37,11 +37,13 @@ cat <<EOF >"$BUILD_SCRIPT"
 
     source /patches/nvcc.sh
 
+    git apply /patches/ffmpeg-libvmaf-vulkan.patch
+
     ./configure --prefix=/ffbuild/prefix --pkg-config-flags="--static" \$FFBUILD_TARGET_FLAGS \$FF_CONFIGURE \
         --extra-cflags="\$FF_CFLAGS" --extra-cxxflags="\$FF_CXXFLAGS" --extra-libs="\$FF_LIBS" \
         --extra-ldflags="\$FF_LDFLAGS" --extra-ldexeflags="\$FF_LDEXEFLAGS" \
         --cc="\$CC" --cxx="\$CXX" --ar="\$AR" --ranlib="\$RANLIB" --nm="\$NM" \
-        --extra-version="BlackBeard"
+        --extra-version="BlackBeard" --enable-libvmaf-vulkan
     make -j\$(nproc) V=1
     make install install-doc
 EOF

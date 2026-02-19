@@ -1,7 +1,7 @@
 #!/bin/bash
 
-SCRIPT_REPO="https://github.com/Netflix/vmaf.git"
-SCRIPT_COMMIT="332dde62838d91d8b5216e9822de58851f2fd64f"
+SCRIPT_REPO="https://github.com/lusoris/vmaf.git"
+SCRIPT_COMMIT="07f1504a41b65ea4a91883e05a8035aa3510078a"
 
 ffbuild_enabled() {
     return 0
@@ -10,6 +10,7 @@ ffbuild_enabled() {
 ffbuild_depends() {
     echo base
     echo ffnvcodec
+    echo vulkan
 }
 
 ffbuild_dockerstage() {
@@ -19,6 +20,8 @@ ffbuild_dockerstage() {
 ffbuild_dockerbuild() {
     # Kill build of unused and broken tools
     echo > libvmaf/tools/meson.build
+
+#   git apply /patches/0001-fix-install.patch
 
     mkdir build && cd build
 
@@ -31,6 +34,7 @@ ffbuild_dockerbuild() {
         -Denable_docs=false
         -Denable_avx512=true
         -Denable_float=true
+        -Denable_vulkan=true
     )
 
     if [[ $TARGET == win* || $TARGET == linux* ]]; then
@@ -43,10 +47,10 @@ ffbuild_dockerbuild() {
     fi
 
     source /patches/nvcc.sh
+
     meson "${myconf[@]}" ../libvmaf ../libvmaf/build || cat meson-logs/meson-log.txt
     ninja -j"$(nproc)" -C ../libvmaf/build
     DESTDIR="$FFBUILD_DESTDIR" ninja install -C ../libvmaf/build
-
     sed -i 's/Libs.private:/Libs.private: -lstdc++/; t; $ a Libs.private: -lstdc++' "$FFBUILD_DESTPREFIX"/lib/pkgconfig/libvmaf.pc
 }
 
