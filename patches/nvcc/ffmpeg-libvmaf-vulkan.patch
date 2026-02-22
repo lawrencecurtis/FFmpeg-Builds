@@ -68,6 +68,7 @@ index 10d5b7f..ed2a209 100644
  #endif
  
 +#if CONFIG_LIBVMAF_VULKAN_FILTER
++#include <inttypes.h>
 +#include <libvmaf/libvmaf_vulkan.h>
 +#include "libavutil/hwcontext.h"
 +#include "libavutil/hwcontext_vulkan.h"
@@ -78,7 +79,7 @@ index 10d5b7f..ed2a209 100644
  typedef struct LIBVMAFContext {
      const AVClass *class;
      FFFrameSync fs;
-@@ -64,6 +72,19 @@ typedef struct LIBVMAFContext {
+@@ -64,6 +72,20 @@ typedef struct LIBVMAFContext {
  #if CONFIG_LIBVMAF_CUDA_FILTER
      VmafCudaState *cu_state;
  #endif
@@ -91,19 +92,42 @@ index 10d5b7f..ed2a209 100644
 +    VkBuffer vmaf_dist_buf;
 +    VkCommandPool copy_pool;
 +    VkCommandBuffer copy_cmd;
-+    VkFence copy_fence;
 +    VkImageAspectFlags y_plane_aspect;
 +    unsigned pixel_shift;
++    int gpu_profile;
 +#endif
  } LIBVMAFContext;
  
  #define OFFSET(x) offsetof(LIBVMAFContext, x)
-@@ -826,3 +847,382 @@ const FFFilter ff_vf_libvmaf_cuda = {
+@@ -826,3 +848,414 @@ const FFFilter ff_vf_libvmaf_cuda = {
      .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
  };
  #endif
 +
 +#if CONFIG_LIBVMAF_VULKAN_FILTER
++
++#define VULKAN_FLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM
++static const AVOption libvmaf_vulkan_options[] = {
++    {"log_path",  "Set the file path to be used to write log.",
++                  OFFSET(log_path), AV_OPT_TYPE_STRING, {.str=NULL}, 0, 1, VULKAN_FLAGS},
++    {"log_fmt",   "Set the format of the log (csv, json, xml, or sub).",
++                  OFFSET(log_fmt), AV_OPT_TYPE_STRING, {.str="xml"}, 0, 1, VULKAN_FLAGS},
++    {"pool",      "Set the pool method to be used for computing vmaf.",
++                  OFFSET(pool), AV_OPT_TYPE_STRING, {.str=NULL}, 0, 1, VULKAN_FLAGS},
++    {"n_threads", "Set number of threads to be used when computing vmaf.",
++                  OFFSET(n_threads), AV_OPT_TYPE_INT, {.i64=0}, 0, UINT_MAX, VULKAN_FLAGS},
++    {"n_subsample", "Set interval for frame subsampling used when computing vmaf.",
++                    OFFSET(n_subsample), AV_OPT_TYPE_INT, {.i64=1}, 1, UINT_MAX, VULKAN_FLAGS},
++    {"model",     "Set the model to be used for computing vmaf.",
++                  OFFSET(model_cfg), AV_OPT_TYPE_STRING, {.str="version=vmaf_v0.6.1"}, 0, 1, VULKAN_FLAGS},
++    {"feature",   "Set the feature to be used for computing vmaf.",
++                  OFFSET(feature_cfg), AV_OPT_TYPE_STRING, {.str=NULL}, 0, 1, VULKAN_FLAGS},
++    {"gpu_profile", "Print per-shader GPU timing breakdown at end of encode.",
++                    OFFSET(gpu_profile), AV_OPT_TYPE_BOOL, {.i64=0}, 0, 1, VULKAN_FLAGS},
++    { NULL }
++};
++#undef VULKAN_FLAGS
++FRAMESYNC_DEFINE_CLASS(libvmaf_vulkan, LIBVMAFContext, fs);
 +
 +static int do_vmaf_vulkan(FFFrameSync *fs)
 +{
@@ -130,6 +154,19 @@ index 10d5b7f..ed2a209 100644
 +    // For separate per-plane VkImages (R8_UNORM each), use COLOR_BIT.
 +    VkImageAspectFlags y_aspect = s->y_plane_aspect;
 +
++    // First-frame diagnostic dump
++    if (s->frame_cnt == 0) {
++        av_log(ctx, AV_LOG_INFO,
++               "libvmaf_vulkan frame 0: ref img=%p layout=0x%x access=0x%x "
++               "sem_value=%"PRIu64" | dist img=%p layout=0x%x access=0x%x "
++               "sem_value=%"PRIu64" | aspect=0x%x\n",
++               (void *)ref_vk->img[0], ref_vk->layout[0], ref_vk->access[0],
++               ref_vk->sem_value[0],
++               (void *)dist_vk->img[0], dist_vk->layout[0], dist_vk->access[0],
++               dist_vk->sem_value[0],
++               y_aspect);
++    }
++
 +    // Wait for previous libvmaf compute batch to finish reading from the
 +    // shared buffers before we overwrite them with new frame data.
 +    // Without this, the vkCmdCopyImageToBuffer below can race with the
@@ -148,11 +185,13 @@ index 10d5b7f..ed2a209 100644
 +    };
 +    vk->BeginCommandBuffer(s->copy_cmd, &begin_info);
 +
-+    // Transition both Y-plane images to TRANSFER_SRC_OPTIMAL
++    // Transition both Y-plane images to TRANSFER_SRC_OPTIMAL.
++    // Timeline semaphores (below) provide execution+memory dependency from
++    // the decoder, so srcStageMask only needs layout transition coverage.
 +    VkImageMemoryBarrier img_barriers[2] = {
 +        {
 +            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-+            .srcAccessMask = ref_vk->access[0],
++            .srcAccessMask = 0,  // semaphore covers memory dependency
 +            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
 +            .oldLayout     = ref_vk->layout[0],
 +            .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -165,7 +204,7 @@ index 10d5b7f..ed2a209 100644
 +        },
 +        {
 +            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-+            .srcAccessMask = dist_vk->access[0],
++            .srcAccessMask = 0,  // semaphore covers memory dependency
 +            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
 +            .oldLayout     = dist_vk->layout[0],
 +            .newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -178,7 +217,7 @@ index 10d5b7f..ed2a209 100644
 +        },
 +    };
 +    vk->CmdPipelineBarrier(s->copy_cmd,
-+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 +                         VK_PIPELINE_STAGE_TRANSFER_BIT,
 +                         0, 0, NULL, 0, NULL, 2, img_barriers);
 +
@@ -243,13 +282,16 @@ index 10d5b7f..ed2a209 100644
 +        .pSignalSemaphores    = signal_sems,
 +    };
 +
-+    vk->ResetFences(s->vk_device, 1, &s->copy_fence);
-+    vr = vk->QueueSubmit(s->vk_queue, 1, &submit, s->copy_fence);
++    vr = vk->QueueSubmit(s->vk_queue, 1, &submit, VK_NULL_HANDLE);
 +    if (vr != VK_SUCCESS) {
 +        av_log(ctx, AV_LOG_ERROR, "vkQueueSubmit (Y copy) failed: %d\n", vr);
 +        return AVERROR_EXTERNAL;
 +    }
-+    vk->WaitForFences(s->vk_device, 1, &s->copy_fence, VK_TRUE, UINT64_MAX);
++    // No fence needed — copy and compute share the same queue, so Vulkan
++    // guarantees in-order execution.  The TRANSFER→COMPUTE memory barrier
++    // in copy_cmd handles data visibility.  vmaf_vulkan_wait_compute() at
++    // the start of the NEXT frame waits for batch_fence (signaled after
++    // compute submit), which implicitly covers this earlier copy submit.
 +
 +    // Update dist frame tracking for downstream consumers
 +    dist_vk->layout[0]    = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -278,11 +320,14 @@ index 10d5b7f..ed2a209 100644
 +{
 +    LIBVMAFContext *s = ctx->priv;
 +    FFVulkanFunctions *vk = &s->vkfn;
-+    if (s->vk_device && vk->DestroyFence) {
-+        if (s->copy_fence) {
-+            vk->DestroyFence(s->vk_device, s->copy_fence, NULL);
-+            s->copy_fence = VK_NULL_HANDLE;
++    if (s->gpu_profile && s->vk_state) {
++        char *prof = vmaf_vulkan_profiling_get_string(s->vk_state);
++        if (prof) {
++            av_log(ctx, AV_LOG_INFO, "%s", prof);
++            free(prof);
 +        }
++    }
++    if (s->vk_device && vk->DestroyCommandPool) {
 +        if (s->copy_pool) {
 +            vk->DestroyCommandPool(s->vk_device, s->copy_pool, NULL);
 +            s->copy_pool = VK_NULL_HANDLE;
@@ -316,6 +361,14 @@ index 10d5b7f..ed2a209 100644
 +    s->bpc = desc->comp[0].depth;
 +    s->pixel_shift = desc->comp[0].shift;
 +
++    av_log(ctx, AV_LOG_INFO,
++           "libvmaf_vulkan: sw_format=%s bpc=%u pixel_shift=%u "
++           "comp[0]={depth=%d,shift=%d,step=%d,offset=%d} %dx%d\n",
++           desc->name, s->bpc, s->pixel_shift,
++           desc->comp[0].depth, desc->comp[0].shift,
++           desc->comp[0].step, desc->comp[0].offset,
++           inlink->w, inlink->h);
++
 +    // Detect whether FFmpeg hwframes uses multi-planar VkImages or separate
 +    // per-plane images.  For multi-planar images (single VkImage containing
 +    // all planes), the Y plane must be addressed with PLANE_0_BIT, not
@@ -330,9 +383,13 @@ index 10d5b7f..ed2a209 100644
 +            // Separate per-plane images, or single-plane format
 +            s->y_plane_aspect = VK_IMAGE_ASPECT_COLOR_BIT;
 +        }
-+        av_log(ctx, AV_LOG_VERBOSE,
-+               "Vulkan Y-plane aspect: 0x%x (nb_planes=%d, fmt[0]=0x%x, fmt[1]=0x%x)\n",
-+               s->y_plane_aspect, nb_planes,
++        av_log(ctx, AV_LOG_INFO,
++               "libvmaf_vulkan: Y-plane aspect=0x%x (%s) nb_planes=%d "
++               "fmt[0]=0x%x fmt[1]=0x%x\n",
++               s->y_plane_aspect,
++               (s->y_plane_aspect == VK_IMAGE_ASPECT_PLANE_0_BIT)
++                   ? "PLANE_0" : "COLOR",
++               nb_planes,
 +               vk_frames->format[0], vk_frames->format[1]);
 +    }
 +
@@ -372,6 +429,13 @@ index 10d5b7f..ed2a209 100644
 +        av_log(ctx, AV_LOG_ERROR,
 +               "vmaf_vulkan_state_init failed: %d\n", err);
 +        return AVERROR_EXTERNAL;
++    }
++
++    if (s->gpu_profile) {
++        err = vmaf_vulkan_profiling_enable(s->vk_state);
++        if (err)
++            av_log(ctx, AV_LOG_WARNING,
++                   "GPU profiling not available on this device\n");
 +    }
 +
 +    err = vmaf_vulkan_import_state(s->vmaf, s->vk_state);
@@ -437,15 +501,6 @@ index 10d5b7f..ed2a209 100644
 +        return AVERROR_EXTERNAL;
 +    }
 +
-+    VkFenceCreateInfo fence_info = {
-+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-+    };
-+    vr = vk->CreateFence(s->vk_device, &fence_info, NULL, &s->copy_fence);
-+    if (vr != VK_SUCCESS) {
-+        av_log(ctx, AV_LOG_ERROR, "vkCreateFence failed: %d\n", vr);
-+        return AVERROR_EXTERNAL;
-+    }
-+
 +    err = parse_models(ctx);
 +    if (err)
 +        return err;
@@ -469,8 +524,8 @@ index 10d5b7f..ed2a209 100644
 +    .p.name         = "libvmaf_vulkan",
 +    .p.description  = NULL_IF_CONFIG_SMALL("Calculate the VMAF between two video "
 +                                           "streams using Vulkan GPU acceleration."),
-+    .p.priv_class   = &libvmaf_class,
-+    .preinit        = libvmaf_framesync_preinit,
++    .p.priv_class   = &libvmaf_vulkan_class,
++    .preinit        = libvmaf_vulkan_framesync_preinit,
 +    .init           = init_vulkan,
 +    .uninit         = uninit_vulkan,
 +    .activate       = activate,
@@ -481,4 +536,3 @@ index 10d5b7f..ed2a209 100644
 +    .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
 +};
 +#endif
-\ No newline at end of file

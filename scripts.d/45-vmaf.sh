@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_REPO="https://github.com/lusoris/vmaf.git"
-SCRIPT_COMMIT="6a7d6376cdf927a5b30d6f727c563edb3f9e6101"
+SCRIPT_COMMIT="056e865309a004e766b44d2539cbd6e4252d9919"
 
 ffbuild_enabled() {
     return 0
